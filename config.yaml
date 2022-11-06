@@ -1,0 +1,26 @@
+trainer:
+  gpus: 1
+  precision: 16
+  check_val_every_n_epoch: 5
+  max_epochs: 50
+  enable_checkpointing: False
+  gradient_clip_val: 1
+data_module:
+  fold: 0
+  train_batch_size: 128
+  eval_batch_size: 128
+model:
+  num_labels: 18468
+arcface:
+  s: 15
+  m: 0.2
+faiss:
+  distance: "dot"
+debug: False
+defaults:
+  - override hydra/job_logging: none
+  - override hydra/hydra_logging: none
+hydra:
+  output_subdir: null
+  run:
+    dir: .
