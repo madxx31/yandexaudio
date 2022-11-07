@@ -91,7 +91,7 @@ class ArcMarginProduct(nn.Module):
         return output
 
 
-class BasicNet(nn.Module):
+class CNNEncoder(nn.Module):
     def __init__(self, output_features_size):
         super().__init__()
         self.output_features_size = output_features_size
@@ -103,12 +103,48 @@ class BasicNet(nn.Module):
         self.linear1 = nn.Linear(self.output_features_size, self.output_features_size)
         self.linear2 = nn.Linear(self.output_features_size, 128, bias=False)
 
-    def forward(self, x):
+    def forward(self, batch):
+        x = batch["input"]
         x = F.relu(self.conv_1(x.transpose(1, 2)))
         x = F.relu(self.conv_2(x))
         x = self.mp_1(x)
         x = F.relu(self.conv_3(x))
         x = self.conv_4(x).mean(axis=2)
+        x = self.linear2(F.relu(self.linear1(x)))
+        return x
+
+
+class LSTMEncoder(nn.Module):
+    def __init__(self, output_features_size):
+        super().__init__()
+        self.output_features_size = output_features_size
+        self.spatial_dropout = torch.nn.Dropout2d(p=0.15)
+        self.lstm = nn.LSTM(
+            input_size=512,
+            hidden_size=output_features_size,
+            num_layers=2,
+            batch_first=True,
+            dropout=0.2,
+            bidirectional=True,
+        )
+        self.linear1 = nn.Linear(self.output_features_size * 4, self.output_features_size)
+        self.linear2 = nn.Linear(self.output_features_size, 128, bias=False)
+        # self.dropout = nn.Dropout(0.2)
+
+    def forward(self, batch):
+        inputs = batch["input"]
+        inputs = inputs.permute(0, 2, 1)  # convert to [batch, channels, time]
+        inputs = self.spatial_dropout(inputs)
+        inputs = inputs.permute(0, 2, 1)  # back to [batch, time, channels]
+        packed = nn.utils.rnn.pack_padded_sequence(
+            inputs, batch["input_lengths"], batch_first=True, enforce_sorted=False
+        )
+        out, _ = self.lstm(packed)
+        out, _ = nn.utils.rnn.pad_packed_sequence(out, batch_first=True)
+        mask = batch["attention_mask"].unsqueeze(2).repeat(1, 1, out.shape[2])
+        max_pooling = out.masked_fill(mask == 0, torch.finfo(out.dtype).min).max(axis=1)[0]
+        avg_pooling = (out * mask).sum(axis=1) / mask.sum(axis=1)
+        x = torch.cat([max_pooling, avg_pooling], axis=1)
         x = self.linear2(F.relu(self.linear1(x)))
         return x
 
@@ -120,36 +156,15 @@ class Model(pl.LightningModule):
         self.loss = nn.CrossEntropyLoss()
         self.train_loss = 0
         self.train_loss_cnt = 0
-        # self.lstm = nn.LSTM(
-        #     input_size=512,
-        #     hidden_size=64,
-        #     num_layers=2,
-        #     batch_first=True,
-        #     dropout=0.2,
-        #     bidirectional=True,
-        # )
-        # self.dropout = nn.Dropout(0.2)
-        self.encoder = BasicNet(256)
+
+        # self.encoder = CNNEncoder(256)
+        self.encoder = LSTMEncoder(128)
         self.arcface = ArcMarginProduct(
             128, self.cfg["model"]["num_labels"], s=self.cfg.arcface.s, m=self.cfg.arcface.m, k=self.cfg.arcface.k
         )
-        # self.out_proj = nn.Linear(128 * 2 * 2, self.cfg["model"]["num_labels"])
-
-    def get_emb(self, batch):
-        # packed = nn.utils.rnn.pack_padded_sequence(
-        #     batch["input"], batch["input_lengths"], batch_first=True, enforce_sorted=False
-        # )
-        # out, _ = self.lstm(packed)
-        # out, _ = nn.utils.rnn.pad_packed_sequence(out, batch_first=True)
-        # mask = batch["attention_mask"].unsqueeze(2).repeat(1, 1, out.shape[2])
-        # max_pooling = out.masked_fill(mask == 0, torch.finfo(out.dtype).min).max(axis=1)[0]
-        # avg_pooling = (out * mask).sum(axis=1) / mask.sum(axis=1)
-        # return torch.cat([max_pooling, avg_pooling], axis=1)
-        return self.encoder(batch["input"])
 
     def forward(self, batch):
-        emb = self.get_emb(batch)
-        # out = self.dropout(emb)
+        emb = self.encoder(batch)
         return self.arcface(emb, batch["labels"])
 
     def training_step(self, batch, batch_idx):
@@ -164,7 +179,7 @@ class Model(pl.LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx):
-        emb = self.get_emb(batch)
+        emb = self.encoder(batch)
         return {"emb": emb, "labels": batch["labels"]}
 
     def validation_epoch_end(self, outputs):
