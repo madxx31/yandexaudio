@@ -50,14 +50,15 @@ class ArcMarginProduct(nn.Module):
         cos(theta + m)
     """
 
-    def __init__(self, in_features, out_features, s=30.0, m=0.50, easy_margin=False, ls_eps=0.0):
+    def __init__(self, in_features, out_features, s=30.0, m=0.50, easy_margin=False, ls_eps=0.0, k=1):
         super(ArcMarginProduct, self).__init__()
         self.in_features = in_features
         self.out_features = out_features
         self.s = s
         self.m = m
+        self.k = k
         self.ls_eps = ls_eps  # label smoothing
-        self.weight = nn.Parameter(torch.FloatTensor(out_features, in_features))
+        self.weight = nn.Parameter(torch.FloatTensor(out_features * k, in_features))
         nn.init.xavier_uniform_(self.weight)
 
         self.easy_margin = easy_margin
@@ -68,7 +69,9 @@ class ArcMarginProduct(nn.Module):
 
     def forward(self, input, label):
         # --------------------------- cos(theta) & phi(theta) ---------------------
-        cosine = F.linear(F.normalize(input), F.normalize(self.weight))
+        cosine_all = F.linear(F.normalize(input), F.normalize(self.weight))
+        cosine_all = cosine_all.view(-1, self.out_features, self.k)
+        cosine, _ = torch.max(cosine_all, dim=2)
         sine = torch.sqrt(1.0 - torch.pow(cosine, 2))
         phi = (cosine * self.cos_m - sine * self.sin_m).type(cosine.dtype)
         if self.easy_margin:
@@ -128,7 +131,7 @@ class Model(pl.LightningModule):
         # self.dropout = nn.Dropout(0.2)
         self.encoder = BasicNet(256)
         self.arcface = ArcMarginProduct(
-            128, self.cfg["model"]["num_labels"], s=self.cfg.arcface.s, m=self.cfg.arcface.m
+            128, self.cfg["model"]["num_labels"], s=self.cfg.arcface.s, m=self.cfg.arcface.m, k=self.cfg.arcface.k
         )
         # self.out_proj = nn.Linear(128 * 2 * 2, self.cfg["model"]["num_labels"])
 
