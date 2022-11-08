@@ -142,6 +142,18 @@ class Attention(nn.Module):
         return torch.sum(weighted_input, dim=1)
 
 
+class GeMPooling(nn.Module):
+    def __init__(self, p=3, eps=1e-6, requires_grad=False):
+        super().__init__()
+        self.p = nn.Parameter(torch.ones(1) * p, requires_grad=requires_grad)
+        self.eps = eps
+
+    def forward(self, x, mask):
+        x = x.clamp(min=self.eps).pow(self.p)
+        x = (x * mask).sum(axis=1) / mask.sum(axis=1)
+        return x.pow(1.0 / self.p)
+
+
 class LSTMEncoder(nn.Module):
     def __init__(self, output_features_size):
         super().__init__()
@@ -155,8 +167,9 @@ class LSTMEncoder(nn.Module):
             dropout=0.2,
             bidirectional=True,
         )
-        self.attention = Attention(input_dim=self.output_features_size * 2)
-        self.linear1 = nn.Linear(self.output_features_size * 6, self.output_features_size)
+        self.attention = Attention(input_dim=self.output_features_size)
+        self.gem = GeMPooling()
+        self.linear1 = nn.Linear(self.output_features_size * 2, self.output_features_size)
         self.linear2 = nn.Linear(self.output_features_size, 128, bias=False)
         # self.dropout = nn.Dropout(0.2)
 
@@ -170,10 +183,39 @@ class LSTMEncoder(nn.Module):
         )
         out, _ = self.lstm(packed)
         out, _ = nn.utils.rnn.pad_packed_sequence(out, batch_first=True)
+        out = out[:, :, : self.output_features_size] + out[:, :, self.output_features_size :]
+        mask = batch["attention_mask"].unsqueeze(2).repeat(1, 1, out.shape[2])
+        # max_pooling = out.masked_fill(mask == 0, torch.finfo(out.dtype).min).max(axis=1)[0]
+        # avg_pooling = (out * mask).sum(axis=1) / mask.sum(axis=1)
+        gem_pooling = self.gem(out, mask)
+        x = torch.cat([self.attention(out, batch["attention_mask"]), gem_pooling], axis=1)
+        x = self.linear2(F.relu(self.linear1(x)))
+        return x
+
+
+class TransformerEncoder(nn.Module):
+    def __init__(self, output_features_size):
+        super().__init__()
+        self.output_features_size = output_features_size
+        self.spatial_dropout = torch.nn.Dropout2d(p=0.15)
+        self.linear0 = nn.Linear(512, self.output_features_size)
+        encoder_layer = nn.TransformerEncoderLayer(d_model=output_features_size, nhead=8, batch_first=True)
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=2)
+        self.linear1 = nn.Linear(self.output_features_size * 2, self.output_features_size)
+        self.linear2 = nn.Linear(self.output_features_size, 128, bias=False)
+        # self.dropout = nn.Dropout(0.2)
+
+    def forward(self, batch):
+        inputs = batch["input"]
+        inputs = inputs.permute(0, 2, 1)  # convert to [batch, channels, time]
+        inputs = self.spatial_dropout(inputs)
+        inputs = inputs.permute(0, 2, 1)  # back to [batch, time, channels]
+        inputs = F.relu(self.linear0(inputs))
+        out = self.transformer_encoder(inputs, src_key_padding_mask=batch["attention_mask"])
         mask = batch["attention_mask"].unsqueeze(2).repeat(1, 1, out.shape[2])
         max_pooling = out.masked_fill(mask == 0, torch.finfo(out.dtype).min).max(axis=1)[0]
         avg_pooling = (out * mask).sum(axis=1) / mask.sum(axis=1)
-        x = torch.cat([self.attention(out, batch["attention_mask"]), max_pooling, avg_pooling], axis=1)
+        x = torch.cat([max_pooling, avg_pooling], axis=1)
         x = self.linear2(F.relu(self.linear1(x)))
         return x
 
@@ -187,7 +229,8 @@ class Model(pl.LightningModule):
         self.train_loss_cnt = 0
 
         # self.encoder = CNNEncoder(256)
-        self.encoder = LSTMEncoder(128)
+        self.encoder = LSTMEncoder(160)
+        # self.encoder = TransformerEncoder(256)
         self.arcface = ArcMarginProduct(
             128, self.cfg["model"]["num_labels"], s=self.cfg.arcface.s, m=self.cfg.arcface.m, k=self.cfg.arcface.k
         )
