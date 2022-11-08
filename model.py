@@ -114,6 +114,34 @@ class CNNEncoder(nn.Module):
         return x
 
 
+class Attention(nn.Module):
+    def __init__(self, input_dim):
+        super(Attention, self).__init__()
+        self.W = nn.Parameter(torch.Tensor(1, input_dim, input_dim))
+        self.b = nn.Parameter(torch.Tensor(1, 1, input_dim))
+        self.u = nn.Parameter(torch.Tensor(input_dim, 1))
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        nn.init.xavier_uniform_(self.W)
+        nn.init.zeros_(self.b)
+        nn.init.xavier_uniform_(self.u)
+
+    def forward(self, x, mask=None):
+        W = self.W.repeat(x.size()[0], 1, 1)
+        b = self.b.repeat(x.size()[0], x.size()[1], 1)
+        u = self.u.unsqueeze(0).repeat(x.size()[0], 1, 1)
+        uit = torch.tanh(torch.bmm(x, W) + b)
+        ait = torch.bmm(uit, u)
+        if mask is not None:
+            mask = mask.long()
+            ait = ait.squeeze(-1).masked_fill(mask == 0, torch.finfo(ait.dtype).min)
+        a = F.softmax(ait, dim=-1)
+        a = a.unsqueeze(-1).repeat(1, 1, x.size()[2])
+        weighted_input = x * a
+        return torch.sum(weighted_input, dim=1)
+
+
 class LSTMEncoder(nn.Module):
     def __init__(self, output_features_size):
         super().__init__()
@@ -127,7 +155,8 @@ class LSTMEncoder(nn.Module):
             dropout=0.2,
             bidirectional=True,
         )
-        self.linear1 = nn.Linear(self.output_features_size * 4, self.output_features_size)
+        self.attention = Attention(input_dim=self.output_features_size * 2)
+        self.linear1 = nn.Linear(self.output_features_size * 6, self.output_features_size)
         self.linear2 = nn.Linear(self.output_features_size, 128, bias=False)
         # self.dropout = nn.Dropout(0.2)
 
@@ -144,7 +173,7 @@ class LSTMEncoder(nn.Module):
         mask = batch["attention_mask"].unsqueeze(2).repeat(1, 1, out.shape[2])
         max_pooling = out.masked_fill(mask == 0, torch.finfo(out.dtype).min).max(axis=1)[0]
         avg_pooling = (out * mask).sum(axis=1) / mask.sum(axis=1)
-        x = torch.cat([max_pooling, avg_pooling], axis=1)
+        x = torch.cat([self.attention(out, batch["attention_mask"]), max_pooling, avg_pooling], axis=1)
         x = self.linear2(F.relu(self.linear1(x)))
         return x
 
