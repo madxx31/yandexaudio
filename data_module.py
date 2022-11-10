@@ -8,16 +8,40 @@ from tqdm.auto import tqdm
 
 
 class AudioDataset(Dataset):
-    def __init__(self, features, lengths, labels):
+    def __init__(self, artist_tracks, features, lengths, labels, examples_per_artist=2, augment=False, seed=17):
+        self.artist_tracks = artist_tracks
         self.tracks = features
         self.lengths = lengths
         self.labels = labels
+        self.examples_per_artist = examples_per_artist
+        self.augment = augment
+        self.chunks = []
+        self.rng = np.random.default_rng(seed)
+        self._get_chunks()
+
+    def _split_list(self, l):
+        return [l[i : i + self.examples_per_artist] for i in range(0, len(l), self.examples_per_artist)]
+
+    def _get_chunks(self):
+        self.chunks = []
+        for track_list in self.artist_tracks:
+            self.rng.shuffle(track_list)
+            self.chunks += self._split_list(track_list)
+
+    def get_track(self, i):
+        if self.augment:
+            l = self.lengths[i]
+            newl = int(self.rng.uniform(40, l))
+            start = int(self.rng.uniform(0, l - newl))
+            return {"input": self.tracks[i][start : start + newl, :], "length": newl, "label": self.labels[i]}
+        else:
+            return {"input": self.tracks[i], "length": self.lengths[i], "label": self.labels[i]}
 
     def __len__(self):
-        return len(self.tracks)
+        return len(self.chunks)
 
     def __getitem__(self, idx):
-        return {"input": self.tracks[idx], "length": self.lengths[idx], "label": self.labels[idx]}
+        return [self.get_track(i) for i in self.chunks[idx]]
 
 
 class DataModule(pl.LightningDataModule):
@@ -42,10 +66,29 @@ class DataModule(pl.LightningDataModule):
         kf = KFold(n_splits=4, random_state=17, shuffle=True)
         for f, (_, a) in enumerate(kf.split(s.artistid.unique())):
             s.loc[s.artistid.isin(a), "fold"] = f
-        tr_ind = s[s.fold != self.cfg["data_module"]["fold"]].index.values
-        self.train_dataset = AudioDataset(track_features[tr_ind], track_lengths[tr_ind], s.artistid[tr_ind].values - 1)
-        tr_ind = s[s.fold == self.cfg["data_module"]["fold"]].index.values
-        self.val_dataset = AudioDataset(track_features[tr_ind], track_lengths[tr_ind], s.artistid[tr_ind].values - 1)
+        s.artistid -= 1
+        s.trackid -= 1
+        train_meta = s[s.fold != self.cfg["data_module"]["fold"]]
+        train_artist_tracks = train_meta.groupby("artistid").trackid.agg(list)
+        self.train_dataset = AudioDataset(
+            train_artist_tracks,
+            track_features,
+            track_lengths,
+            s.artistid.values,
+            examples_per_artist=self.cfg["data_module"]["examples_per_artist"],
+            augment=True,
+        )
+        val_meta = s[s.fold == self.cfg["data_module"]["fold"]]
+        val_artist_tracks = val_meta.groupby("artistid").trackid.agg(list)
+        self.val_dataset = AudioDataset(
+            val_artist_tracks,
+            track_features,
+            track_lengths,
+            s.artistid.values,
+            examples_per_artist=self.cfg["data_module"]["examples_per_artist"],
+        )
+        # tr_ind = s[s.fold == self.cfg["data_module"]["fold"]].index.values
+        # self.val_dataset = AudioDataset(track_features[tr_ind], track_lengths[tr_ind], s.artistid[tr_ind].values - 1)
 
     def train_dataloader(self):
         return DataLoader(
@@ -66,6 +109,7 @@ class DataModule(pl.LightningDataModule):
         )
 
     def collator(self, batch):
+        batch = sum(batch, [])
         batch_size = len(batch)
         input_lengths = [i["length"] for i in batch]
         max_len = max(input_lengths)

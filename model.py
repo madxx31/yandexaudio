@@ -6,6 +6,8 @@ import faiss
 import numpy as np
 from datetime import datetime
 import math
+from pytorch_metric_learning.losses import NTXentLoss, SubCenterArcFaceLoss
+from math import degrees
 
 
 def position_discounter(position):
@@ -66,6 +68,7 @@ class ArcMarginProduct(nn.Module):
         self.sin_m = math.sin(m)
         self.th = math.cos(math.pi - m)
         self.mm = math.sin(math.pi - m) * m
+        self.loss = nn.CrossEntropyLoss()
 
     def forward(self, input, label):
         # --------------------------- cos(theta) & phi(theta) ---------------------
@@ -88,7 +91,7 @@ class ArcMarginProduct(nn.Module):
         output = (one_hot * phi) + ((1.0 - one_hot) * cosine)
         output *= self.s
 
-        return output
+        return self.loss(output, label)
 
 
 class CNNEncoder(nn.Module):
@@ -224,20 +227,27 @@ class Model(pl.LightningModule):
     def __init__(self, cfg=None):
         super().__init__()
         self.cfg = cfg
-        self.loss = nn.CrossEntropyLoss()
+        # self.loss = nn.CrossEntropyLoss()
+        # self.loss = NTXentLoss()
+        # self.loss = SubCenterArcFaceLoss(
+        #     num_classes=self.cfg["model"]["num_labels"],
+        #     embedding_size=128,
+        #     margin=degrees(self.cfg.arcface.m),
+        #     scale=self.cfg.arcface.s,
+        #     sub_centers=self.cfg.arcface.k,
+        # )
         self.train_loss = 0
         self.train_loss_cnt = 0
 
         # self.encoder = CNNEncoder(256)
         self.encoder = LSTMEncoder(160)
         # self.encoder = TransformerEncoder(256)
-        self.arcface = ArcMarginProduct(
+        self.loss = ArcMarginProduct(
             128, self.cfg["model"]["num_labels"], s=self.cfg.arcface.s, m=self.cfg.arcface.m, k=self.cfg.arcface.k
         )
 
     def forward(self, batch):
-        emb = self.encoder(batch)
-        return self.arcface(emb, batch["labels"])
+        return self.encoder(batch)
 
     def training_step(self, batch, batch_idx):
         out = self(batch)
@@ -249,6 +259,10 @@ class Model(pl.LightningModule):
             self.train_loss = 0
             self.train_loss_cnt = 0
         return loss
+
+    def training_epoch_end(self, outputs):
+        self.trainer.datamodule.train_dataset._get_chunks()
+        return super().training_epoch_end(outputs)
 
     def validation_step(self, batch, batch_idx):
         emb = self.encoder(batch)
