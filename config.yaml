@@ -2,7 +2,7 @@ trainer:
   gpus: 1
   precision: 16
   check_val_every_n_epoch: 5
-  max_epochs: 200
+  max_epochs: 115
   enable_checkpointing: False
   gradient_clip_val: 1
   accumulate_grad_batches: 1
@@ -20,6 +20,7 @@ arcface:
 faiss:
   distance: "dot"
 debug: False
+submit: True
 defaults:
   - override hydra/job_logging: none
   - override hydra/hydra_logging: none

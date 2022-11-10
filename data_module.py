@@ -44,6 +44,18 @@ class AudioDataset(Dataset):
         return [self.get_track(i) for i in self.chunks[idx]]
 
 
+class SimpleAudioDataset(Dataset):
+    def __init__(self, features, lengths):
+        self.tracks = features
+        self.lengths = lengths
+
+    def __len__(self):
+        return len(self.tracks)
+
+    def __getitem__(self, idx):
+        return [{"input": self.tracks[idx], "length": self.lengths[idx], "label": -100}]
+
+
 class DataModule(pl.LightningDataModule):
     def __init__(self, cfg=None):
         super().__init__()
@@ -61,6 +73,8 @@ class DataModule(pl.LightningDataModule):
                 tmp = np.load("train_features/" + f).astype(np.float16).T
                 track_features[i, : tmp.shape[0], :] = tmp
                 track_lengths.append(tmp.shape[0])
+            np.save("train.npy", track_features)
+            np.save("train_lengths.npy", track_lengths)
         if self.cfg["debug"]:
             s = s.sample(1000)
         kf = KFold(n_splits=4, random_state=17, shuffle=True)
@@ -87,8 +101,26 @@ class DataModule(pl.LightningDataModule):
             s.artistid.values,
             examples_per_artist=self.cfg["data_module"]["examples_per_artist"],
         )
-        # tr_ind = s[s.fold == self.cfg["data_module"]["fold"]].index.values
-        # self.val_dataset = AudioDataset(track_features[tr_ind], track_lengths[tr_ind], s.artistid[tr_ind].values - 1)
+        # submit
+        if self.cfg["submit"]:
+            s = pd.read_csv("test_meta.tsv", sep="\t")
+            self.test_ids = s.trackid.astype(str).values
+            try:
+                test_track_features = np.load("test.npy")
+                test_track_lengths = np.load("test_lengths.npy")
+            except:
+                test_track_features = np.zeros((len(s), 81, 512), np.float16)
+                test_track_lengths = []
+                for i, f in enumerate(tqdm(s.archive_features_path.values)):
+                    tmp = np.load("test_features/" + f).astype(np.float16).T
+                    test_track_features[i, : tmp.shape[0], :] = tmp
+                    test_track_lengths.append(tmp.shape[0])
+                np.save("test.npy", test_track_features)
+                np.save("test_lengths.npy", test_track_lengths)
+            self.test_dataset = SimpleAudioDataset(
+                test_track_features,
+                test_track_lengths,
+            )
 
     def train_dataloader(self):
         return DataLoader(
@@ -105,7 +137,15 @@ class DataModule(pl.LightningDataModule):
             self.val_dataset,
             collate_fn=self.collator,
             num_workers=4,
-            batch_size=self.cfg["data_module"]["train_batch_size"],
+            batch_size=self.cfg["data_module"]["eval_batch_size"],
+        )
+
+    def test_dataloader(self):
+        return DataLoader(
+            self.test_dataset,
+            collate_fn=self.collator,
+            num_workers=4,
+            batch_size=self.cfg["data_module"]["eval_batch_size"],
         )
 
     def collator(self, batch):

@@ -268,6 +268,10 @@ class Model(pl.LightningModule):
         emb = self.encoder(batch)
         return {"emb": emb, "labels": batch["labels"]}
 
+    def test_step(self, batch, batch_idx):
+        emb = self.encoder(batch)
+        return {"emb": emb}
+
     def validation_epoch_end(self, outputs):
         if len(outputs) < 10:
             return
@@ -282,6 +286,21 @@ class Model(pl.LightningModule):
         _, I = index.search(emb, 101)
         ndcg = compute_ndcg(labels, I[:, 1:])
         self.log("eval/ndcg", ndcg, on_step=False, on_epoch=True, prog_bar=True)
+
+    def test_epoch_end(self, outputs):
+        emb = torch.cat([x["emb"] for x in outputs], dim=0).detach().cpu().numpy().astype(np.float32)
+        if self.cfg.faiss.distance == "dot":
+            emb = emb / (((emb**2).sum(1)) ** 0.5).reshape(-1, 1).clip(min=1e-12)
+            index = faiss.IndexFlatIP(emb.shape[1])
+        else:
+            index = faiss.IndexFlatL2(emb.shape[1])
+        index.add(emb)
+        _, I = index.search(emb, 101)
+        track_ids = self.trainer.datamodule.test_ids
+        with open("submission_{:%Y%m%d_%H%M%S}.txt".format(datetime.now()), "w") as f:
+            for row in I:
+                results = [track_ids[i] for i in row[1:]]
+                f.write(track_ids[row[0]] + "\t" + (" ".join(results)) + "\n")
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=1e-4)
