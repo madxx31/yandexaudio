@@ -2,17 +2,17 @@ trainer:
   gpus: 1
   precision: 16
   check_val_every_n_epoch: 5
-  max_epochs: 115
+  max_epochs: 75
   enable_checkpointing: False
   gradient_clip_val: 1
   accumulate_grad_batches: 1
 data_module:
   fold: 0
-  train_batch_size: 1024
-  eval_batch_size: 1024
-  examples_per_artist: 1
+  train_batch_size: 256
+  eval_batch_size: 256
+  examples_per_artist: 2
 model:
-  num_labels: 18468
+  num_labels: 13852 #18468
 arcface:
   s: 15
   m: 0.2

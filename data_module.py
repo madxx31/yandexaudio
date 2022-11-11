@@ -83,6 +83,8 @@ class DataModule(pl.LightningDataModule):
         s.artistid -= 1
         s.trackid -= 1
         train_meta = s[s.fold != self.cfg["data_module"]["fold"]]
+        s.loc[s.fold != self.cfg["data_module"]["fold"], "artistid"] = pd.factorize(train_meta.artistid)[0]
+        print(train_meta.artistid.nunique())
         train_artist_tracks = train_meta.groupby("artistid").trackid.agg(list)
         self.train_dataset = AudioDataset(
             train_artist_tracks,

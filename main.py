@@ -21,7 +21,8 @@ def main(cfg: DictConfig) -> None:
     lr_monitor = LearningRateMonitor(logging_interval="step")
     trainer = Trainer(**cfg.trainer, logger=wandb_logger, callbacks=[lr_monitor])
     trainer.fit(model, dm)
-    # trainer.validate(model, datamodule=dm)
+    if cfg.submit:
+        trainer.test(model, datamodule=dm)
 
     # trainer.save_checkpoint("model.ckpt", weights_only=True)
 

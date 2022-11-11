@@ -8,6 +8,7 @@ from datetime import datetime
 import math
 from pytorch_metric_learning.losses import NTXentLoss, SubCenterArcFaceLoss
 from math import degrees
+from torch.optim.lr_scheduler import CyclicLR
 
 
 def position_discounter(position):
@@ -205,7 +206,7 @@ class TransformerEncoder(nn.Module):
         encoder_layer = nn.TransformerEncoderLayer(d_model=output_features_size, nhead=8, batch_first=True)
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=2)
         self.linear1 = nn.Linear(self.output_features_size * 2, self.output_features_size)
-        self.linear2 = nn.Linear(self.output_features_size, 128, bias=False)
+        self.linear2 = nn.Linear(self.output_features_size, 128)
         # self.dropout = nn.Dropout(0.2)
 
     def forward(self, batch):
@@ -228,7 +229,7 @@ class Model(pl.LightningModule):
         super().__init__()
         self.cfg = cfg
         # self.loss = nn.CrossEntropyLoss()
-        # self.loss = NTXentLoss()
+        self.loss2 = NTXentLoss()
         # self.loss = SubCenterArcFaceLoss(
         #     num_classes=self.cfg["model"]["num_labels"],
         #     embedding_size=128,
@@ -236,6 +237,7 @@ class Model(pl.LightningModule):
         #     scale=self.cfg.arcface.s,
         #     sub_centers=self.cfg.arcface.k,
         # )
+        # self.bnorm = nn.BatchNorm1d(128)
         self.train_loss = 0
         self.train_loss_cnt = 0
 
@@ -251,7 +253,8 @@ class Model(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         out = self(batch)
-        loss = self.loss(out, batch["labels"])
+        # out = self.bnorm(out)
+        loss = self.loss(out, batch["labels"]) + self.loss2(out, batch["labels"])
         self.train_loss += loss.item()
         self.train_loss_cnt += 1
         if self.train_loss_cnt == self.trainer.log_every_n_steps * self.trainer.accumulate_grad_batches:
@@ -276,6 +279,7 @@ class Model(pl.LightningModule):
         if len(outputs) < 10:
             return
         emb = torch.cat([x["emb"] for x in outputs], dim=0).detach().cpu().numpy().astype(np.float32)
+        np.save("val_emb.npy", emb)
         labels = torch.cat([x["labels"] for x in outputs], dim=0).detach().cpu().numpy()
         if self.cfg.faiss.distance == "dot":
             emb = emb / (((emb**2).sum(1)) ** 0.5).reshape(-1, 1).clip(min=1e-12)
@@ -289,6 +293,7 @@ class Model(pl.LightningModule):
 
     def test_epoch_end(self, outputs):
         emb = torch.cat([x["emb"] for x in outputs], dim=0).detach().cpu().numpy().astype(np.float32)
+        np.save("test_emb.npy", emb)
         if self.cfg.faiss.distance == "dot":
             emb = emb / (((emb**2).sum(1)) ** 0.5).reshape(-1, 1).clip(min=1e-12)
             index = faiss.IndexFlatIP(emb.shape[1])
@@ -307,9 +312,9 @@ class Model(pl.LightningModule):
         # scheduler = CyclicLR(
         #     optimizer,
         #     base_lr=1e-5,
-        #     max_lr=5e-4,
+        #     max_lr=2.5e-4,
         #     cycle_momentum=False,
-        #     step_size_up=4000,
+        #     step_size_up=3075,
         #     mode="triangular2",
         # )
         # lr_scheduler = ReduceLROnPlateau(optimizer, patience=5, factor=0.5, verbose=True)
