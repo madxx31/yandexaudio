@@ -300,7 +300,17 @@ class Model(pl.LightningModule):
         else:
             index = faiss.IndexFlatL2(emb.shape[1])
         index.add(emb)
-        _, I = index.search(emb, 101)
+        dist, I = index.search(emb, 101)
+        # query expansion
+        n = 2
+        newquery = (emb + sum([emb[I[:, i + 1], :] * dist[:, i + 1][:, None] for i in range(n)])) / (
+            np.ones(len(emb)) + sum([dist[:, i + 1] for i in range(n)])
+        )[:, None]
+        newquery = newquery / (((newquery**2).sum(1)) ** 0.5).reshape(-1, 1).clip(min=1e-12).astype(np.float32)
+        index = faiss.IndexFlatIP(newquery.shape[1])
+        index.add(newquery.astype(np.float32))
+        _, I = index.search(newquery.astype(np.float32), 101)
+
         track_ids = self.trainer.datamodule.test_ids
         with open("submission_{:%Y%m%d_%H%M%S}.txt".format(datetime.now()), "w") as f:
             for row in I:
